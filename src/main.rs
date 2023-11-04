@@ -1,5 +1,10 @@
 use chess::{Board, ChessMove, Piece, BitBoard, Square, EMPTY, Color};
 use regex::Regex;
+use serenity::framework::standard::macros::{command, group, hook};
+use serenity::framework::standard::{CommandResult, StandardFramework};
+use serenity::model::channel::Message;
+use serenity::model::gateway::Ready;
+use serenity::{prelude::*, async_trait};
 
 struct Game {
     board: Board,
@@ -26,6 +31,7 @@ impl TryFrom<String> for MoveRequest {
 
             let square_from = if !square_from_str.is_empty() {Some(square_from_str.parse::<Square>().unwrap())} else {None};
             let square_to = square_to_str.parse::<Square>().unwrap();
+    
             let piece_type = if !piece_type_str.is_empty() {
                 match piece_type_str.bytes().next().unwrap() as char {
                     'K' =>  Piece::King,
@@ -52,20 +58,64 @@ impl TryFrom<String> for MoveRequest {
     }
 }
 
-fn main() {
-    let mut game = Game {
-        board: Board::default(),
-        user_id_white: String::new(),
-        user_id_black: String::new(),
-        whose_turn: chess::Color::White
-    };
 
-    println!("{}", game.board);
-    println!("Making move e4");
-    match move_piece(&mut game, "e4".to_string()) {
-        Ok(())      => println!("{}", game.board),
-        Err(reason) => println!("Got error: {}", reason)
-    };
+#[command]
+async fn about(ctx: &Context, msg: &Message) -> CommandResult {
+    println!("ABOUT");
+    msg.reply(&ctx.http, "Lets you play chess in an inconvenient way.").await?;
+
+    Ok(())
+}
+
+#[command]
+async fn ping(ctx: &Context, msg: &Message) -> CommandResult {
+    println!("PING");
+    msg.reply(&ctx.http, "pong!").await?;
+
+    Ok(())
+}
+
+struct DiscordHandler;
+
+impl EventHandler for DiscordHandler {}
+
+#[group]
+#[commands(about, ping)]
+struct General;
+
+#[tokio::main]
+async fn main() {
+    // let mut game = Game {
+    //     board: Board::default(),
+    //     user_id_white: String::new(),
+    //     user_id_black: String::new(),
+    //     whose_turn: chess::Color::White
+    // };
+
+    // println!("{}", game.board);
+    // println!("Making move e4");
+    // match move_piece(&mut game, "e4".to_string()) {
+    //     Ok(())      => println!("{}", game.board),
+    //     Err(reason) => println!("Got error: {}", reason)
+    // };
+
+    let token = std::env::var("DISCORD_TOKEN").expect("Need DISCORD_TOKEN to be defined in the environment");
+
+    // let app_id: u64 = std::env::var("APP_ID").expect("Need APP_ID to be defined in the environment")
+    //                                  .parse().expect("Need APP_ID to be parsable as a u64");
+
+    let framework = StandardFramework::new().configure(|c| c.prefix("!")).group(&GENERAL_GROUP);
+    let intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT;
+
+    let mut client = Client::builder(&token, intents)
+                            .event_handler(DiscordHandler)
+                            .framework(framework)
+                            .await
+                            .expect("Error creating client");
+
+    if let Err(reason) = client.start().await {
+        println!("Client err: {:?}", reason);
+    }
 }
 
 fn move_piece(game: &mut Game, movestr: String) -> Result<(), &str> {
