@@ -1,15 +1,15 @@
-use std::collections::HashMap;
-
 use chess::{Board, ChessMove, Piece, BitBoard, Square, EMPTY, Color, ALL_SQUARES};
-use raster::error::{RasterResult, RasterError};
+
+use raster::error::RasterError;
 use raster::{Image, BlendMode, PositionMode, editor};
+
 use regex::Regex;
-use serenity::framework::standard::macros::{command, group, hook};
+
+use serenity::framework::standard::macros::{command, group};
 use serenity::framework::standard::{CommandResult, StandardFramework};
 use serenity::model::channel::Message;
-use serenity::model::gateway::Ready;
 use serenity::model::id::UserId;
-use serenity::{prelude::*, async_trait};
+use serenity::prelude::*;
 
 struct Game {
     board: Board,
@@ -25,18 +25,56 @@ struct MoveRequest {
     promotion: Option<Piece>
 }
 
-impl TryFrom<String> for MoveRequest {
-    type Error = &'static str;
-    fn try_from(s: String) -> Result<Self, Self::Error> {
+fn requested_move(s: String, game: &Game) -> Result<MoveRequest, &'static str> {
+    // Handle special cases of notation first
+    if s == "O-O" {
+        // Castle short (kingside)
+        if game.whose_turn == Color::Black {
+            Ok(MoveRequest {
+                square_from: Some(Square::E8),
+                square_to: Square::G8,
+                piece_type: Piece::King,
+                promotion: None
+            })
+        }
+        else {
+            Ok(MoveRequest {
+                square_from: Some(Square::E1),
+                square_to: Square::G1,
+                piece_type: Piece::King,
+                promotion: None
+            })
+        }
+    }
+    else if s == "O-O-O" {
+        // Castle long (queenside)
+        if game.whose_turn == Color::Black {
+            Ok(MoveRequest {
+                square_from: Some(Square::E8),
+                square_to: Square::C8,
+                piece_type: Piece::King,
+                promotion: None
+            })
+        }
+        else {
+            Ok(MoveRequest {
+                square_from: Some(Square::E1),
+                square_to: Square::C1,
+                piece_type: Piece::King,
+                promotion: None
+            })
+        }
+    }
+    else {
         // I am a fool for trying to do this without regular expressions.
         let re = Regex::new(r"([a-h]?[1-8]?)([NKQBR]?)x?([a-h][1-8])[+#]?").unwrap();
 
         if let Some(captures) = re.captures(&s) {
             let (_full, [square_from_str, piece_type_str, square_to_str]) = captures.extract();
-
+            
             let square_from = if !square_from_str.is_empty() {Some(square_from_str.parse::<Square>().unwrap())} else {None};
             let square_to = square_to_str.parse::<Square>().unwrap();
-    
+            
             let piece_type = if !piece_type_str.is_empty() {
                 match piece_type_str.bytes().next().unwrap() as char {
                     'K' =>  Piece::King,
@@ -51,7 +89,7 @@ impl TryFrom<String> for MoveRequest {
             };
 
             // TODO handle promotion syntax
-            Ok(Self {
+            Ok(MoveRequest {
                 square_from,
                 square_to,
                 piece_type,
@@ -208,7 +246,7 @@ async fn movepiece(ctx: &Context, msg: &Message) -> CommandResult {
     // slice off "!move "
     let movestr = &msg.content[6..];
 
-    if let Ok(move_requested) = MoveRequest::try_from(movestr.to_string()) {
+    if let Ok(move_requested) = requested_move(movestr.to_string(), &game) {
         let mut relevant_pieces: BitBoard = game.board.pieces(move_requested.piece_type).clone();
         let mut source_squares: Vec<Square> = Vec::new();
         let source_square: Square;
