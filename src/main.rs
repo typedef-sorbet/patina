@@ -1,4 +1,4 @@
-use chess::{Board, ChessMove, Piece, BitBoard, Square, EMPTY, Color, ALL_SQUARES};
+use chess::{Board, ChessMove, Piece, BitBoard, Square, EMPTY, Color, ALL_SQUARES, MoveGen};
 
 use raster::error::RasterError;
 use raster::{Image, BlendMode, PositionMode, editor};
@@ -313,7 +313,17 @@ async fn movepiece(ctx: &Context, msg: &Message) -> CommandResult {
             m
         }).await?;
 
-        readd_game(game);
+        // We've successfully moved. Is the game over now?
+        if MoveGen::new_legal(&game.board).len() == 0 {
+            msg.channel_id.send_message(&ctx.http, |m| {
+                m.content("Game over!");
+                m
+            }).await?;
+        }
+        else {
+            readd_game(game);
+        }
+
 
         return Ok(());
     }
