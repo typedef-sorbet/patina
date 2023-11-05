@@ -1,8 +1,8 @@
 ## Commands
 
-- `move (default)`
-    - Syntax: `move <notation>` OR `<notation>` where `notation` is a *valid, unambiguous, and legal move* in algebraic chess [notation](https://en.wikipedia.org/wiki/Algebraic_notation_(chess))
-    - Moves a piece, and passes play to the other player. Errors if the player is not in a game, or if the move is invalid, illegal, or could refer to more than one legal move.
+- `movepiece`
+    - Syntax: `movepiece <notation>` where `notation` is a *valid, unambiguous, and legal move* in algebraic chess [notation](https://en.wikipedia.org/wiki/Algebraic_notation_(chess))
+    - Moves a piece, and passes play to the other player. Errors if the player is not in a game, it isn't their turn,x or if the move is invalid, illegal, or could refer to more than one legal move.
 - `show`
     - Syntax: `show <space>`
     - If a piece exists at `space`, renders all legal moves for the piece at `space` on the board. Errors if the player is not in a game.
