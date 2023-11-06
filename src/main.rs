@@ -15,6 +15,7 @@ struct Game {
     board: Board,
     user_id_white: UserId,
     user_id_black: UserId,
+    offered_draw: Option<UserId>,
     whose_turn: chess::Color
 }
 
@@ -177,7 +178,8 @@ async fn start(ctx: &Context, msg: &Message) -> CommandResult {
         GAMES.push(Game { 
             board: Board::default(), 
             user_id_white: if wants_black {user_id_opponent} else {user_id_requester}, 
-            user_id_black:  if wants_black {user_id_requester} else {user_id_opponent}, 
+            user_id_black:  if wants_black {user_id_requester} else {user_id_opponent},
+            offered_draw: None,
             whose_turn: Color::White }
         );
     }
@@ -244,125 +246,170 @@ fn render_board(game: &Game) -> Result<(), RasterError> {
     Ok(())
 }
 
-#[command]
-async fn movepiece(ctx: &Context, msg: &Message) -> CommandResult {
-    // Get the relevant game.
-    let mut game: Game;
-
+fn pop_game(who: UserId) -> Option<Game> {
     unsafe {
-        if let Some(pos) = GAMES.iter().position(|g| g.user_id_black == msg.author.id || g.user_id_white == msg.author.id) {
-            game = GAMES.remove(pos);
+        if let Some(pos) = GAMES.iter().position(|g| g.user_id_black == who || g.user_id_white == who) {
+            Some(GAMES.remove(pos))
         } else {
-            msg.reply(&ctx.http, "I don't see a game you're in. You can start a new one with `!start with <@user> [as black|white]`").await?;
-            return Ok(());
+            None
         }
     }
+}
 
-    if (game.whose_turn == Color::Black && game.user_id_white == msg.author.id) || (game.whose_turn == Color::White && game.user_id_black == msg.author.id) {
-        msg.reply(&ctx.http, "It's not your turn.").await?;
-        readd_game(game);
-        return Ok(());
-    }
-
-    // slice off "!move "
-    let movestr = &msg.content[6..];
-
-    match requested_move(movestr.to_string(), &game) {
-        Ok(move_requested) => {
-            let mut relevant_pieces: BitBoard = game.board.pieces(move_requested.piece_type).clone();
-            let mut source_squares: Vec<Square> = Vec::new();
-            let source_square: Square;
-
-            if move_requested.square_from.is_none()
-            {
-                while relevant_pieces != EMPTY {
-                    let square = relevant_pieces.to_square();
-                    // xor-equals to clear this bit from the bitmap
-                    relevant_pieces ^= EMPTY | BitBoard::from_square(square);
-                    // Filter any pieces whose turn it isn't.
-                    // NOTE: This unwrap() should be safe, since we're only looking at squares where a piece exists
-                    if game.board.color_on(square).unwrap() == game.whose_turn {
-                        source_squares.push(square);
-                    }
-                }
-            
-                // Are there any pieces left?
-                if source_squares.len() == 0 {
-                    msg.reply(&ctx.http, "You have no pieces of that type.").await?;
-                    readd_game(game);
-                    return Ok(());
-                }
-
-                // Of the remaining pieces, can any move to the specified square?
-                let valid_source_squares = source_squares.iter()
-                                                        .map(|&sq| (game.board.legal(ChessMove::new(sq, move_requested.square_to, None)), sq))
-                                                        .filter(|(valid, _)| *valid)
-                                                        .collect::<Vec<(bool, Square)>>();
-            
-                if valid_source_squares.len() > 1 {
-                    msg.reply(&ctx.http, "More than one legal move is implied by that notation -- prepend the piece name with the square of the piece you want to move").await?;
-                    readd_game(game);
-                    return Ok(());
-                }
-                else if valid_source_squares.len() == 0 {
-                    msg.reply(&ctx.http, "Given movestring is not a legal move").await?;
-                    readd_game(game);
-                    return Ok(());
-                }
-                else {
-                    source_square = valid_source_squares.as_slice()[0].1;
-                }
-            }
-            else {
-                source_square = move_requested.square_from.unwrap();
-            }
-
-            // We now have a known good source and target square. Let's make a move!
-            // TODO handle promotion
-            game.board = game.board.make_move_new(ChessMove::new(source_square, move_requested.square_to, None));
-            game.whose_turn = match game.whose_turn {
-                Color::White => Color::Black,
-                Color::Black => Color::White
-            };
-
-            render_board(&game).expect("oopsie");
-
-            let f = [(&tokio::fs::File::open("res/out.png").await?, "out.png")];
-
+#[command]
+async fn draw(ctx: &Context, msg: &Message) -> CommandResult {
+    if let Some(mut game) = pop_game(msg.author.id) {
+        if game.offered_draw.is_none() {
+            game.offered_draw = Some(msg.author.id);
             msg.channel_id.send_message(&ctx.http, |m| {
-                m.reference_message(msg);
-                m.files(f);
+                m.content("Your opponent has offered a draw. You can use `!draw` to accept, or you may keep playing.");
                 m
             }).await?;
-
-            // We've successfully moved. Is the game over now?
-            if MoveGen::new_legal(&game.board).len() == 0 {
-                msg.channel_id.send_message(&ctx.http, |m| {
-                    m.content("Game over!");
-                    m
-                }).await?;
-            }
-            else {
-                readd_game(game);
-            }
-
-
-            return Ok(());
-        },
-        Err(reason) => {
-            msg.reply(&ctx.http, format!("Improperly formatted move string: {}", reason)).await?;
+            readd_game(game);
+        } else {
+            msg.channel_id.send_message(&ctx.http, |m| {
+                m.content("Draw accepted.");
+                m
+            }).await?;
         }
+    } else {
+        msg.reply(&ctx.http, "I don't see a game you're in. You can start a new one with `!start with <@user> [as black|white]`").await?;
     }
 
     Ok(())
 }
 
+#[command]
+async fn resign(ctx: &Context, msg: &Message) -> CommandResult {
+    if let Some(_) = pop_game(msg.author.id) {
+        msg.reply(&ctx.http, "Resigned.").await?;
+    } else {
+        msg.reply(&ctx.http, "I don't see a game you're in. You can start a new one with `!start with <@user> [as black|white]`").await?;
+    }
+
+    Ok(())
+}
+
+#[command]
+async fn movepiece(ctx: &Context, msg: &Message) -> CommandResult {
+    // Get the relevant game.
+    let mut game: Game;
+
+    if let Some(mut game) = pop_game(msg.author.id) {
+        if (game.whose_turn == Color::Black && game.user_id_white == msg.author.id) || (game.whose_turn == Color::White && game.user_id_black == msg.author.id) {
+            msg.reply(&ctx.http, "It's not your turn.").await?;
+            readd_game(game);
+            return Ok(());
+        }
+
+        // Clear any draw offer when a move is made.
+        if game.offered_draw.is_some() {
+            game.offered_draw = None;
+        }
+    
+        // slice off "!move "
+        let movestr = &msg.content[6..];
+    
+        match requested_move(movestr.to_string(), &game) {
+            Ok(move_requested) => {
+                let mut relevant_pieces: BitBoard = game.board.pieces(move_requested.piece_type).clone();
+                let mut source_squares: Vec<Square> = Vec::new();
+                let source_square: Square;
+    
+                if move_requested.square_from.is_none()
+                {
+                    while relevant_pieces != EMPTY {
+                        let square = relevant_pieces.to_square();
+                        // xor-equals to clear this bit from the bitmap
+                        relevant_pieces ^= EMPTY | BitBoard::from_square(square);
+                        // Filter any pieces whose turn it isn't.
+                        // NOTE: This unwrap() should be safe, since we're only looking at squares where a piece exists
+                        if game.board.color_on(square).unwrap() == game.whose_turn {
+                            source_squares.push(square);
+                        }
+                    }
+                
+                    // Are there any pieces left?
+                    if source_squares.len() == 0 {
+                        msg.reply(&ctx.http, "You have no pieces of that type.").await?;
+                        readd_game(game);
+                        return Ok(());
+                    }
+    
+                    // Of the remaining pieces, can any move to the specified square?
+                    let valid_source_squares = source_squares.iter()
+                                                            .map(|&sq| (game.board.legal(ChessMove::new(sq, move_requested.square_to, None)), sq))
+                                                            .filter(|(valid, _)| *valid)
+                                                            .collect::<Vec<(bool, Square)>>();
+                
+                    if valid_source_squares.len() > 1 {
+                        msg.reply(&ctx.http, "More than one legal move is implied by that notation -- prepend the piece name with the square of the piece you want to move").await?;
+                        readd_game(game);
+                        return Ok(());
+                    }
+                    else if valid_source_squares.len() == 0 {
+                        msg.reply(&ctx.http, "Given movestring is not a legal move").await?;
+                        readd_game(game);
+                        return Ok(());
+                    }
+                    else {
+                        source_square = valid_source_squares.as_slice()[0].1;
+                    }
+                }
+                else {
+                    source_square = move_requested.square_from.unwrap();
+                }
+    
+                // We now have a known good source and target square. Let's make a move!
+                // TODO handle promotion
+                game.board = game.board.make_move_new(ChessMove::new(source_square, move_requested.square_to, None));
+                game.whose_turn = match game.whose_turn {
+                    Color::White => Color::Black,
+                    Color::Black => Color::White
+                };
+    
+                render_board(&game).expect("oopsie");
+    
+                let f = [(&tokio::fs::File::open("res/out.png").await?, "out.png")];
+    
+                msg.channel_id.send_message(&ctx.http, |m| {
+                    m.reference_message(msg);
+                    m.files(f);
+                    m
+                }).await?;
+    
+                // We've successfully moved. Is the game over now?
+                if MoveGen::new_legal(&game.board).len() == 0 {
+                    msg.channel_id.send_message(&ctx.http, |m| {
+                        m.content("Game over!");
+                        m
+                    }).await?;
+                }
+                else {
+                    readd_game(game);
+                }
+    
+    
+                return Ok(());
+            },
+            Err(reason) => {
+                msg.reply(&ctx.http, format!("Improperly formatted move string: {}", reason)).await?;
+            }
+        }
+    }
+    else {
+        msg.reply(&ctx.http, "I don't see a game you're in. You can start a new one with `!start with <@user> [as black|white]`").await?;
+    }
+
+
+    Ok(())
+}
 
 struct DiscordHandler;
 impl EventHandler for DiscordHandler {}
 
 #[group]
-#[commands(about, ping, start, movepiece)]
+#[commands(about, ping, start, draw, resign, movepiece)]
 struct General;
 
 #[tokio::main]
