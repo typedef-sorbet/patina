@@ -68,6 +68,7 @@ fn requested_move(s: String, game: &Game) -> Result<MoveRequest, &'static str> {
     else {
         // I am a fool for trying to do this without regular expressions.
         let re = Regex::new(r"([a-h]?[1-8]?)([NKQBR]?)x?([a-h][1-8])[+#]?").unwrap();
+        let mut promotion: Option<Piece> = None;
 
         if let Some(captures) = re.captures(&s) {
             let (_full, [square_from_str, piece_type_str, square_to_str]) = captures.extract();
@@ -88,15 +89,35 @@ fn requested_move(s: String, game: &Game) -> Result<MoveRequest, &'static str> {
                 Piece::Pawn
             };
 
-            // TODO handle promotion syntax
+            if piece_type == Piece::Pawn && [0, 7].contains(&square_to.get_rank().to_index()) {
+                // promotion!
+                if s.contains("=")
+                {
+                    let promotion_re = Regex::new(r"=([QRNB])").unwrap();
+                    if let Some(promotion_capture) = promotion_re.captures(&s) {
+                        let (_full, [promotion_type]) = promotion_capture.extract();
+                        promotion = Some(match promotion_type {
+                            "Q" => Piece::Queen,
+                            "R" => Piece::Rook,
+                            "N" => Piece::Knight,
+                            "B" => Piece::Bishop,
+                            _ => panic!("Unexpected item in matching area")
+                        });
+                    }
+                } 
+                else {
+                    return Err("Please denote the piece you wish to promote to with an equals sign, e.g. `e8=Q`.");
+                }
+            }
+
             Ok(MoveRequest {
                 square_from,
                 square_to,
                 piece_type,
-                promotion: None
+                promotion
             })
         } else {
-            Err("Regex match failed")
+            Err("Unable to parse move string.")
         }
     }
 }
@@ -246,89 +267,91 @@ async fn movepiece(ctx: &Context, msg: &Message) -> CommandResult {
     // slice off "!move "
     let movestr = &msg.content[6..];
 
-    if let Ok(move_requested) = requested_move(movestr.to_string(), &game) {
-        let mut relevant_pieces: BitBoard = game.board.pieces(move_requested.piece_type).clone();
-        let mut source_squares: Vec<Square> = Vec::new();
-        let source_square: Square;
+    match requested_move(movestr.to_string(), &game) {
+        Ok(move_requested) => {
+            let mut relevant_pieces: BitBoard = game.board.pieces(move_requested.piece_type).clone();
+            let mut source_squares: Vec<Square> = Vec::new();
+            let source_square: Square;
 
-        if move_requested.square_from.is_none()
-        {
-            while relevant_pieces != EMPTY {
-                let square = relevant_pieces.to_square();
-                // xor-equals to clear this bit from the bitmap
-                relevant_pieces ^= EMPTY | BitBoard::from_square(square);
-                // Filter any pieces whose turn it isn't.
-                // NOTE: This unwrap() should be safe, since we're only looking at squares where a piece exists
-                if game.board.color_on(square).unwrap() == game.whose_turn {
-                    source_squares.push(square);
+            if move_requested.square_from.is_none()
+            {
+                while relevant_pieces != EMPTY {
+                    let square = relevant_pieces.to_square();
+                    // xor-equals to clear this bit from the bitmap
+                    relevant_pieces ^= EMPTY | BitBoard::from_square(square);
+                    // Filter any pieces whose turn it isn't.
+                    // NOTE: This unwrap() should be safe, since we're only looking at squares where a piece exists
+                    if game.board.color_on(square).unwrap() == game.whose_turn {
+                        source_squares.push(square);
+                    }
+                }
+            
+                // Are there any pieces left?
+                if source_squares.len() == 0 {
+                    msg.reply(&ctx.http, "You have no pieces of that type.").await?;
+                    readd_game(game);
+                    return Ok(());
+                }
+
+                // Of the remaining pieces, can any move to the specified square?
+                let valid_source_squares = source_squares.iter()
+                                                        .map(|&sq| (game.board.legal(ChessMove::new(sq, move_requested.square_to, None)), sq))
+                                                        .filter(|(valid, _)| *valid)
+                                                        .collect::<Vec<(bool, Square)>>();
+            
+                if valid_source_squares.len() > 1 {
+                    msg.reply(&ctx.http, "More than one legal move is implied by that notation -- prepend the piece name with the square of the piece you want to move").await?;
+                    readd_game(game);
+                    return Ok(());
+                }
+                else if valid_source_squares.len() == 0 {
+                    msg.reply(&ctx.http, "Given movestring is not a legal move").await?;
+                    readd_game(game);
+                    return Ok(());
+                }
+                else {
+                    source_square = valid_source_squares.as_slice()[0].1;
                 }
             }
-        
-            // Are there any pieces left?
-            if source_squares.len() == 0 {
-                msg.reply(&ctx.http, "You have no pieces of that type.").await?;
-                readd_game(game);
-                return Ok(());
-            }
-
-            // Of the remaining pieces, can any move to the specified square?
-            let valid_source_squares = source_squares.iter()
-                                                    .map(|&sq| (game.board.legal(ChessMove::new(sq, move_requested.square_to, None)), sq))
-                                                    .filter(|(valid, _)| *valid)
-                                                    .collect::<Vec<(bool, Square)>>();
-        
-            if valid_source_squares.len() > 1 {
-                msg.reply(&ctx.http, "More than one legal move is implied by that notation -- prepend the piece name with the square of the piece you want to move").await?;
-                readd_game(game);
-                return Ok(());
-            }
-            else if valid_source_squares.len() == 0 {
-                msg.reply(&ctx.http, "Given movestring is not a legal move").await?;
-                readd_game(game);
-                return Ok(());
-            }
             else {
-                source_square = valid_source_squares.as_slice()[0].1;
+                source_square = move_requested.square_from.unwrap();
             }
-        }
-        else {
-            source_square = move_requested.square_from.unwrap();
-        }
 
-        // We now have a known good source and target square. Let's make a move!
-        // TODO handle promotion
-        game.board = game.board.make_move_new(ChessMove::new(source_square, move_requested.square_to, None));
-        game.whose_turn = match game.whose_turn {
-            Color::White => Color::Black,
-            Color::Black => Color::White
-        };
+            // We now have a known good source and target square. Let's make a move!
+            // TODO handle promotion
+            game.board = game.board.make_move_new(ChessMove::new(source_square, move_requested.square_to, None));
+            game.whose_turn = match game.whose_turn {
+                Color::White => Color::Black,
+                Color::Black => Color::White
+            };
 
-        render_board(&game).expect("oopsie");
+            render_board(&game).expect("oopsie");
 
-        let f = [(&tokio::fs::File::open("res/out.png").await?, "out.png")];
+            let f = [(&tokio::fs::File::open("res/out.png").await?, "out.png")];
 
-        msg.channel_id.send_message(&ctx.http, |m| {
-            m.reference_message(msg);
-            m.files(f);
-            m
-        }).await?;
-
-        // We've successfully moved. Is the game over now?
-        if MoveGen::new_legal(&game.board).len() == 0 {
             msg.channel_id.send_message(&ctx.http, |m| {
-                m.content("Game over!");
+                m.reference_message(msg);
+                m.files(f);
                 m
             }).await?;
-        }
-        else {
-            readd_game(game);
-        }
+
+            // We've successfully moved. Is the game over now?
+            if MoveGen::new_legal(&game.board).len() == 0 {
+                msg.channel_id.send_message(&ctx.http, |m| {
+                    m.content("Game over!");
+                    m
+                }).await?;
+            }
+            else {
+                readd_game(game);
+            }
 
 
-        return Ok(());
-    }
-    else {
-        msg.reply(&ctx.http, "Improperly formatted move string").await?;
+            return Ok(());
+        },
+        Err(reason) => {
+            msg.reply(&ctx.http, format!("Improperly formatted move string: {}", reason)).await?;
+        }
     }
 
     Ok(())
