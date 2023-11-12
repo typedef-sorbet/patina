@@ -267,10 +267,18 @@ async fn draw(ctx: &Context, msg: &Message) -> CommandResult {
             }).await?;
             readd_game(game);
         } else {
-            msg.channel_id.send_message(&ctx.http, |m| {
-                m.content("Draw accepted.");
-                m
-            }).await?;
+            if game.offered_draw.unwrap() != msg.author.id {
+                msg.channel_id.send_message(&ctx.http, |m| {
+                    m.content("Draw accepted.");
+                    m
+                }).await?;
+            } 
+            else {
+                msg.channel_id.send_message(&ctx.http, |m| {
+                    m.content("You've already offered a draw.");
+                    m
+                }).await?;
+            }
         }
     } else {
         msg.reply(&ctx.http, "I don't see a game you're in. You can start a new one with `!start with <@user> [as black|white]`").await?;
