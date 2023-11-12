@@ -278,6 +278,7 @@ async fn draw(ctx: &Context, msg: &Message) -> CommandResult {
                     m.content("You've already offered a draw.");
                     m
                 }).await?;
+                readd_game(game);
             }
         }
     } else {
